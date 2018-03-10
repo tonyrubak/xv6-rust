@@ -1,0 +1,6 @@
+[package]
+name = "xv6"
+version = "0.1.0"
+authors = ["Joseph Peralta <joe@crimsonhexagon.us>"]
+
+[dependencies]
