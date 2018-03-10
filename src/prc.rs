@@ -3,20 +3,31 @@
 extern crate mmu;
 extern crate types;
 
-use mmu::NSEGS;
+use mmu::{NSEGS, TaskState};
 use types::*;
 
-pub struct Context;
-pub struct TaskState;
+#[repr(C)]
+pub struct Context {
+    pub edi: uint,
+    pub esi: uint,
+    pub ebx: uint,
+    pub ebp: uint,
+    pub eip: uint,
+}
+
 pub struct Proc;
-pub struct SegDesc;
 
 #[repr(C)]
-pub struct CPU<'a> {
+pub struct SegDesc {
+    blob: [u8; 8],
+}
+
+#[repr(C)]
+pub struct CPU {
     pub apicid: uchar,
-    pub context: *const Context,
+    pub scheduler: *const Context,
     pub ts: TaskState,
-    pub gdt: &'a [SegDesc; NSEGS],
+    pub gdt: [SegDesc; NSEGS],
     pub started: uint,
     pub ncli: int,
     pub intena: int,

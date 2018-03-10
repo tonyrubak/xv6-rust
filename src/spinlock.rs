@@ -11,7 +11,7 @@ pub extern fn eh_personality() {}
 pub fn panic_fmt() -> ! { loop {} }
 
 extern "C" {
-    fn mycpu<'a>() -> *mut CPU<'a>;
+    fn mycpu() -> *mut CPU;
     fn panic(fmt: *const c_char);
 }
 
@@ -23,7 +23,6 @@ extern crate x86;
 
 use core::intrinsics;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
 use memlayout::*;
 use mmu::*;
 use prc::*;
@@ -31,36 +30,37 @@ use types::*;
 use x86::*;
 
 #[repr(C)]
-pub struct SpinLock<'a> {
-    locked: AtomicBool,
+pub struct SpinLock {
+    locked: uint,
 
     name: *const c_char,
-    cpu: *const CPU<'a>,
-    pcs: &'a mut [uint; 10],
+    cpu: *const CPU,
+    pcs: [uint; 10],
 }
 
 #[no_mangle]
 pub extern fn initlock(lk: *mut SpinLock, nm: *const c_char) {
     let rlk = unsafe { &mut *lk };
     rlk.name = nm;
-    rlk.locked = AtomicBool::new(false);
+    rlk.locked = 0;
     rlk.cpu = ptr::null();
+    rlk.pcs = [0; 10];
 }
 
 #[no_mangle]
-pub unsafe extern fn acquire(lk: *mut SpinLock) {
+pub unsafe extern "C" fn acquire(lk: *mut SpinLock) {
     let rlk = &mut *lk;
     pushcli();
     if holding(rlk) != 0 {
         panic("acquire".as_ptr() as *const c_char);
     }
 
-    while rlk.locked.swap(true, Ordering::SeqCst) != false { }
+    while intrinsics::atomic_xchg(&mut rlk.locked as *mut uint, 1) != 0 { }
 
     core::intrinsics::atomic_fence();
 
     rlk.cpu = mycpu();
-    getcallerpcs(lk, rlk.pcs);
+    getcallerpcs(&lk as *const _ as *const c_void, rlk.pcs.as_mut_ptr());
 }
 
 #[no_mangle]
@@ -75,59 +75,64 @@ pub unsafe extern fn release(lk: *mut SpinLock) {
 
     core::intrinsics::atomic_fence();
 
-    rlk.locked.store(false, Ordering::SeqCst);
+    intrinsics::atomic_store(&mut rlk.locked as *mut uint, 0);
 
     popcli();
 }
 
 #[no_mangle]
-pub unsafe extern fn getcallerpcs(v: *const SpinLock, pcs: &mut [uint]) {
-    let mut ebp: *const uint;
+pub unsafe extern "C" fn getcallerpcs(v: *const c_void, pcs_ptr: *mut uint) {
     let mut i: usize = 0;
+    let pcs = core::slice::from_raw_parts_mut(pcs_ptr, 10);
 
-    ebp = (v as *const uint).offset(-2);
+    let mut ebp = (v as *const uint).offset(-2);
 
     while i < 10 {
         if ebp == (0 as *const uint) || ebp < (KERNBASE as *const uint) || ebp == (0xFFFFFFFF as *const uint) {
             break;
         }
-        pcs[i] = *(ebp.offset(1));
+        pcs[i] = *(ebp.offset(1)) as uint;
         ebp = (*ebp) as *const uint;
         i += 1;
     }
 
     while i < 10 {
         pcs[i] = 0;
+        i += 1;
     }
 }
 
 #[no_mangle]
-pub fn holding(lk: &SpinLock) -> int {
-    if lk.locked.load(Ordering::SeqCst) && lk.cpu == unsafe { mycpu() } { 1 } else { 0 }
+pub extern fn holding(lk: &SpinLock) -> int {
+    if lk.locked != 0 && lk.cpu == unsafe { mycpu() } { 1 } else { 0 }
 }
 
 #[no_mangle]
-pub unsafe fn pushcli() {
+pub unsafe extern "C" fn pushcli() {
     let eflags = readeflags();
     cli();
-    let cpu = mycpu();
-    if (*cpu).ncli == 0 {
-        (*cpu).intena = (eflags & FL_IF) as i32;
+    let cpu = &mut *mycpu();
+
+    let ncli = cpu.started as usize + core::mem::size_of::<CPU>();
+
+    if ncli == 0 {
+        cpu.intena = (eflags & FL_IF) as i32;
     }
-    (*cpu).ncli += 1;
+    cpu.ncli = cpu.ncli + 1;
 }
 
 #[no_mangle]
-pub unsafe fn popcli() {
+pub unsafe extern "C" fn popcli() {
     if readeflags() & FL_IF != 0 {
         panic("popcli - interruptible".as_ptr() as *const c_char);
     }
-    let cpu = mycpu();
-    (*cpu).ncli -= 1;
-    if (*cpu).ncli < 0 {
+    let cpu = &mut *mycpu();
+    cpu.ncli -= 1;
+
+    if cpu.ncli < 0 {
         panic("popcli".as_ptr() as *const c_char);
     }
-    if (*cpu).ncli == 0 && (*cpu).intena != 0 {
+    if cpu.ncli == 0 && cpu.intena != 0 {
         sti();
     }
 }
