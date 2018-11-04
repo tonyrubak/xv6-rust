@@ -1,18 +1,14 @@
 #![no_std]
 #![feature(lang_items)]
 #![feature(core_intrinsics)]
+#![feature(panic_implementation)]
 
 #[no_mangle]
 #[lang = "eh_personality"]
 pub extern fn eh_personality() {}
 
-#[no_mangle]
-#[lang = "panic_fmt"]
-pub fn panic_fmt() -> ! { loop {} }
-
 extern "C" {
     fn mycpu() -> *mut CPU;
-    fn panic(fmt: *const c_char);
 }
 
 extern crate prc;
@@ -22,12 +18,19 @@ extern crate types;
 extern crate x86;
 
 use core::intrinsics;
+use core::panic::PanicInfo;
 use core::ptr;
 use memlayout::*;
 use mmu::*;
 use prc::*;
 use types::*;
 use x86::*;
+
+#[no_mangle]
+#[panic_handler]
+pub fn panic(_info: &PanicInfo) -> ! {
+    unsafe { intrinsics::abort() }
+}
 
 #[repr(C)]
 pub struct SpinLock {
@@ -52,7 +55,7 @@ pub unsafe extern "C" fn acquire(lk: *mut SpinLock) {
     let rlk = &mut *lk;
     pushcli();
     if holding(rlk) != 0 {
-        panic("acquire".as_ptr() as *const c_char);
+        panic!("acquire");
     }
 
     while intrinsics::atomic_xchg(&mut rlk.locked as *mut uint, 1) != 0 { }
@@ -67,7 +70,7 @@ pub unsafe extern "C" fn acquire(lk: *mut SpinLock) {
 pub unsafe extern fn release(lk: *mut SpinLock) {
     let rlk = &mut *lk;
     if holding(rlk) == 0 {
-        panic("release".as_ptr() as *const c_char);
+        panic!("release");
     }
 
     rlk.pcs[0] = 0;
@@ -124,13 +127,13 @@ pub unsafe extern "C" fn pushcli() {
 #[no_mangle]
 pub unsafe extern "C" fn popcli() {
     if readeflags() & FL_IF != 0 {
-        panic("popcli - interruptible".as_ptr() as *const c_char);
+        panic!("popcli - interruptible");
     }
     let cpu = &mut *mycpu();
     cpu.ncli -= 1;
 
     if cpu.ncli < 0 {
-        panic("popcli".as_ptr() as *const c_char);
+        panic!("popcli");
     }
     if cpu.ncli == 0 && cpu.intena != 0 {
         sti();
